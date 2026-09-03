@@ -30,6 +30,48 @@ def test_get_document_info(mock_client, mock_http, sample_document_info, sample_
     assert info["elements"][0]["id"] == "eid_ps1"
 
 
+def test_resolve_document_by_id_bypasses_list_documents(mock_client, mock_http):
+    """_resolve_document_by_id must fetch /documents/{did} directly.
+
+    onpy's get_document() resolves via list_documents(), which only returns the
+    most recent 20 documents — so documents older than the top-20 can't be
+    resolved by ID even though the ID is valid. This method fetches the document
+    through the direct REST endpoint instead and wraps it as an onpy Document.
+    """
+    try:
+        import onpy  # noqa: F401
+    except ImportError:
+        pytest.skip("onpy not installed")
+
+    did = "330e877d8489b677df8a35d1"
+    doc_payload = {
+        "id": did,
+        "name": "multi axis wire grantry",
+        "owner": {"name": "michael justesen", "id": "user_1", "href": "https://cad.onshape.com/api/v6/users/user_1"},
+        "createdBy": {"name": "michael justesen", "id": "user_1", "href": "https://cad.onshape.com/api/v6/users/user_1"},
+        "createdAt": "2025-11-17T18:34:27.088+00:00",
+        "href": f"https://cad.onshape.com/api/v6/documents/{did}",
+        "defaultWorkspace": {"id": "wid_aaa", "name": "Main"},
+    }
+    mock_http.set_route("GET", f"/documents/{did}", MockResponse(200, json_data=doc_payload))
+
+    client_mock = MagicMock()
+    client_mock.id = did
+
+    with patch("onpy.document.Document") as FakeDocument:
+        resolved = mock_client._resolve_document_by_id(client_mock, did)
+
+    doc_gets = [c for c in mock_http.calls if c[0] == "GET" and "/documents" in c[1]]
+    assert len(doc_gets) == 1
+    assert f"/documents/{did}" in doc_gets[0][1]
+
+    FakeDocument.assert_called_once()
+    model = FakeDocument.call_args.args[1]
+    assert model.id == did
+    assert model.name == "multi axis wire grantry"
+    assert model.defaultWorkspace.id == "wid_aaa"
+
+
 # ── Features ────────────────────────────────────────────────────────
 
 def test_list_features(mock_client, mock_http, sample_features):
@@ -71,7 +113,9 @@ def test_create_sketch_calls_onpy(mock_client):
     fake_doc.elements = [fake_el]
 
     fake_client_cls = MagicMock()
-    fake_client_cls.return_value.get_document.return_value = fake_doc
+    # v4: create_sketch resolves the doc via _resolve_document_by_id (direct REST),
+    # not onpy's get_document() (which only sees the most recent 20 documents).
+    fake_client = MagicMock()
 
     fake_partstudio_cls = MagicMock()
     fake_sketch_cls = MagicMock(return_value=fake_sketch)
@@ -88,7 +132,7 @@ def test_create_sketch_calls_onpy(mock_client):
             fake_client_cls, fake_partstudio_cls, fake_plane_cls,
             fake_orient, fake_offset_cls, fake_sketch_cls,
         ),
-    ):
+    ), patch.object(mock_client, "_resolve_document_by_id", return_value=fake_doc):
         result = mock_client.create_sketch(
             "did", "wid", "eid", name="MySketch", plane="TOP",
         )

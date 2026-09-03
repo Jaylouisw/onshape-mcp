@@ -121,6 +121,42 @@ class OnshapeClient:
             onshape_secret_token=self.secret_key,
         )
 
+    def _resolve_document_by_id(self, client, did: str):
+        """Build an onpy Document directly by ID, bypassing onpy's buggy get_document().
+
+        onpy's ``get_document()`` resolves via ``list_documents()``, which only returns
+        the *most recent 20* documents. Any document older than the top 20 fails to
+        resolve by ID — even with a valid document_id — because it is never scanned.
+        The surface error is a cryptic ``Unable to find a document with id <built-in
+        function id>`` (a second onpy bug: it interpolates the builtin ``id`` function
+        instead of the parameter).
+
+        This helper fetches the document via the direct REST endpoint
+        ``GET /documents/{did}`` and wraps it as an onpy ``Document`` so the rest of the
+        onpy feature pipeline (PartStudio, Sketch, features) works unchanged.
+
+        Args:
+            client: A metric onpy Client (from _new_onpy_client).
+            did: The 24-hex Onshape document ID.
+
+        Returns:
+            An onpy ``Document`` object.
+        """
+        from onpy.document import Document
+        import onpy.api.schema as schema
+
+        doc_json = self._get(f"/documents/{did}")
+        model = schema.Document(**{
+            "createdAt": doc_json["createdAt"],
+            "createdBy": doc_json["createdBy"],
+            "href": doc_json["href"],
+            "id": doc_json["id"],
+            "name": doc_json["name"],
+            "owner": doc_json["owner"],
+            "defaultWorkspace": doc_json["defaultWorkspace"],
+        })
+        return Document(client, model)
+
     # ── low-level HTTP ────────────────────────────────────────────
 
     def _request(
@@ -426,7 +462,7 @@ class OnshapeClient:
         # Constructor + document fetch + FeatureScript preflight + feature POST.
         self._pre_acquire(4)
         client = self._new_onpy_client(Client)
-        doc = client.get_document(did)
+        doc = self._resolve_document_by_id(client, did)
         # Find the element
         ps = None
         for el in doc.elements:
@@ -602,7 +638,7 @@ class OnshapeClient:
         # Constructor + document fetch + FeatureScript preflight + feature POST.
         self._pre_acquire(4)
         client = self._new_onpy_client(Client)
-        doc = client.get_document(did)
+        doc = self._resolve_document_by_id(client, did)
         ps = None
         for el in doc.elements:
             if el.id == eid:
