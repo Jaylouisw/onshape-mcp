@@ -87,3 +87,43 @@ def test_handle_call_tool_onshape_help():
     with patch.object(srv, "get_client", side_effect=AssertionError("help must not authenticate")):
         out = asyncio.run(srv.handle_call_tool("onshape_help", {"topic": "units"}))
     assert "METERS" in out[0].text
+
+
+def test_handle_call_tool_get_regen_errors_routes():
+    """get_regen_errors must dispatch with did/wid/eid as keyword args."""
+    fake_client = MagicMock()
+    fake_client.get_regen_errors.return_value = {"featureStates": {}, "problems": []}
+    with patch.object(srv, "get_client", return_value=fake_client):
+        out = asyncio.run(srv.handle_call_tool(
+            "get_regen_errors", {"did": "d", "wid": "w", "eid": "e"},
+        ))
+    fake_client.get_regen_errors.assert_called_once_with(did="d", wid="w", eid="e")
+    assert "featureStates" in out[0].text
+
+
+def test_handle_call_tool_validate_featurescript_routes():
+    fake_client = MagicMock()
+    fake_client.validate_featurescript.return_value = {"valid": True, "errors": []}
+    with patch.object(srv, "get_client", return_value=fake_client):
+        out = asyncio.run(srv.handle_call_tool(
+            "validate_featurescript",
+            {"did": "d", "wid": "w", "eid": "e", "script": "function(context is Context, id) {}"},
+        ))
+    fake_client.validate_featurescript.assert_called_once_with(
+        did="d", wid="w", eid="e", script="function(context is Context, id) {}"
+    )
+    assert "valid" in out[0].text
+
+
+def test_handle_call_tool_build_component_routes():
+    fake_client = MagicMock()
+    fake_client.build_component.return_value = {"valid": True, "created_bodies": {}}
+    with patch.object(srv, "get_client", return_value=fake_client):
+        out = asyncio.run(srv.handle_call_tool(
+            "build_component",
+            {"did": "d", "wid": "w", "eid": "e", "script": "function(context is Context, id) {}"},
+        ))
+    fake_client.build_component.assert_called_once_with(
+        did="d", wid="w", eid="e", script="function(context is Context, id) {}"
+    )
+    assert "created_bodies" in out[0].text

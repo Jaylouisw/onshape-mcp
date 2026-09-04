@@ -562,6 +562,65 @@ TOOLS = [
         },
     ),
     Tool(
+        name="get_regen_errors",
+        description=(
+            "Read regeneration warnings/errors from a Part Studio. Onshape reports the "
+            "regeneration state of every feature in the top-level 'featureStates' map of "
+            "the GET /features response. Use this AFTER creating/editing geometry to see "
+            "whether a feature failed to regenerate and why — instead of guessing from a "
+            "blank render or a silent success."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "did": {"type": "string", "description": "Document ID"},
+                "wid": {"type": "string", "description": "Workspace ID"},
+                "eid": {"type": "string", "description": "Element ID (Part Studio)"},
+            },
+            "required": ["did", "wid", "eid"],
+        },
+    ),
+    Tool(
+        name="validate_featurescript",
+        description=(
+            "Validate FeatureScript against a Part Studio and return the FULL notice list "
+            "(PARSE / EXECUTION errors and PARAMETER_EXPRESSION_* errors). Unlike the official "
+            "Onshape MCP, this does NOT report success on broken code — it returns the real "
+            "compile errors so the agent can fix them. Returns valid=true only if there are "
+            "no error-level notices."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "did": {"type": "string", "description": "Document ID"},
+                "wid": {"type": "string", "description": "Workspace ID"},
+                "eid": {"type": "string", "description": "Element ID (Part Studio)"},
+                "script": {"type": "string", "description": "FeatureScript function body to validate"},
+            },
+            "required": ["did", "wid", "eid", "script"],
+        },
+    ),
+    Tool(
+        name="build_component",
+        description=(
+            "Build all geometry in ONE FeatureScript call (quota-friendly). onpy's "
+            "sketch+extrude path costs 2-4 API calls per operation and each add_line/add_circle "
+            "is its own POST — a whole component can burn 100+ calls against the thin 2,500/yr "
+            "API allocation. This runs a single FeatureScript to create bodies in ~1-3 calls. "
+            "It validates first (no silent success), evals, then reads back regen state."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "did": {"type": "string", "description": "Document ID"},
+                "wid": {"type": "string", "description": "Workspace ID"},
+                "eid": {"type": "string", "description": "Element ID (Part Studio)"},
+                "script": {"type": "string", "description": "FeatureScript that creates bodies (opCreate* / newPartStudio)"},
+            },
+            "required": ["did", "wid", "eid", "script"],
+        },
+    ),
+    Tool(
         name="onshape_help",
         description=(
             "Get help and conversion tables for working with Onshape. "
@@ -843,6 +902,32 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
             text = json.dumps(result, indent=2)
             path = result["path"]
             return [TextContent(type="text", text=f"{text}\n\nMEDIA:{path}")]
+
+        elif name == "get_regen_errors":
+            result = client.get_regen_errors(
+                did=arguments["did"],
+                wid=arguments["wid"],
+                eid=arguments["eid"],
+            )
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "validate_featurescript":
+            result = client.validate_featurescript(
+                did=arguments["did"],
+                wid=arguments["wid"],
+                eid=arguments["eid"],
+                script=arguments["script"],
+            )
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "build_component":
+            result = client.build_component(
+                did=arguments["did"],
+                wid=arguments["wid"],
+                eid=arguments["eid"],
+                script=arguments["script"],
+            )
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]

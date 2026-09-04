@@ -420,6 +420,169 @@ class OnshapeClient:
         self.cache.invalidate_document(did)
         return {"deleted": feature_id}
 
+    def get_regen_errors(self, did: str, wid: str, eid: str) -> dict:
+        """Read regeneration warnings/errors from a Part Studio.
+
+        Onshape reports the regeneration state of every feature in the top-level
+        ``featureStates`` map of the ``GET /features`` response. This lets an agent
+        see *why* a feature failed (rather than guessing from a blank render or a
+        silent success). Returns the feature states with their status, plus the list
+        of features that are NOT ``OK``.
+
+        This is the missing "read regen-errors" capability that the official
+        Onshape MCP lacks (it can push features but cannot read back failures).
+
+        Returns: {sourceMicroversion, featureStates, problems}
+            featureStates: {featureId: {status, inactive}}
+            problems: list of {featureId, name, status} for non-OK features
+        """
+        data = self._get(
+            f"/partstudios/d/{did}/w/{wid}/e/{eid}/features",
+            params={"includeWarnings": True, "includeExternal": True},
+        )
+        if not isinstance(data, dict):
+            return {"featureStates": {}, "problems": []}
+
+        feature_states = data.get("featureStates", {}) or {}
+        features = data.get("features", []) or []
+
+        # Map featureId -> name (for human-readable problems)
+        names = {}
+        for f in features:
+            msg = f.get("message", f)
+            fid = msg.get("featureId") or f.get("featureId")
+            if fid:
+                names[fid] = msg.get("name", "?")
+
+        states = {}
+        for fid, st in feature_states.items():
+            if not isinstance(st, dict):
+                continue
+            states[fid] = {
+                "status": st.get("featureStatus", "?"),
+                "inactive": st.get("inactive", False),
+            }
+
+        problems = [
+            {
+                "featureId": fid,
+                "name": names.get(fid, "?"),
+                "status": st.get("status", "?"),
+                "inactive": st.get("inactive", False),
+            }
+            for fid, st in states.items()
+            if st.get("status") not in ("OK", None)
+        ]
+
+        return {
+            "sourceMicroversion": data.get("sourceMicroversion"),
+            "featureStates": states,
+            "problems": problems,
+        }
+
+    def validate_featurescript(self, did: str, wid: str, eid: str, script: str) -> dict:
+        """Validate FeatureScript against a Part Studio and return the notices.
+
+        Unlike the official Onshape MCP, which returns ``success`` even on broken
+        code, this POSTs to the ``/featurescript`` eval endpoint and returns the
+        FULL notice list (including PARSE / EXECUTION errors and any
+        ``PARAMETER_EXPRESSION_*`` errors). This is real compile validation an
+        agent can act on.
+
+        Returns: {valid, notices, error_count, errors, result}
+            valid: True only if there are no ERROR / PARSE / EXECUTION notices
+            notices: the raw list of BTNotice entries
+            error_count: number of notices with a PARSE/EXECUTION/ERROR-ish type
+            errors: human-readable one-line strings of the errors
+        """
+        result = self._post(
+            f"/partstudios/d/{did}/w/{wid}/e/{eid}/featurescript",
+            json_data={"script": script},
+            use_cache=False,
+        )
+        notices = result.get("notices", []) if isinstance(result, dict) else []
+
+        def notice_type_text(n):
+            # n is likely a dict with "type" and optional expressionErrorInfo
+            if not isinstance(n, dict):
+                return None
+            typ = n.get("type")
+            ei = n.get("expressionErrorInfo") or {}
+            msg = ei.get("errorMessageIdentifier") if isinstance(ei, dict) else None
+            return f"{typ}:{msg}" if typ else msg
+
+        errors = []
+        parse_or_exec = 0
+        for n in notices:
+            if not isinstance(n, dict):
+                continue
+            typ = (n.get("type") or "").upper()
+            level = (n.get("level") or "").upper()
+            ei = n.get("expressionErrorInfo") or {}
+            msgid = ei.get("errorMessageIdentifier") if isinstance(ei, dict) else None
+            # A real compile/execution failure is signalled by: a type in
+            # {PARSE, EXECUTION, SEMANTIC, ERROR}, an ERROR/WARNING level with an
+            # error identifier, or any meaningful PARAMETER_EXPRESSION_* id.
+            problem = (
+                typ in {"PARSE", "EXECUTION", "SEMANTIC", "ERROR"}
+                or (msgid and level in {"ERROR", "WARNING"})
+                or (msgid and msgid.startswith("PARAMETER_EXPRESSION_ERROR"))
+                or (msgid and ("UNKNOWN" in msgid or "NOT_FOUND" in msgid or "FAILED" in msgid))
+            )
+            if problem:
+                parse_or_exec += 1
+                errors.append(notice_type_text(n) or msgid or typ or level)
+
+        return {
+            "valid": parse_or_exec == 0,
+            "notices": notices,
+            "error_count": parse_or_exec,
+            "errors": errors,
+            "result": result.get("result") if isinstance(result, dict) else None,
+        }
+
+    def build_component(self, did: str, wid: str, eid: str, script: str) -> dict:
+        """Build geometry in ONE FeatureScript call (quota-friendly).
+
+        onpy's sketch+extrude path makes 2-4 API calls per operation and each
+        add_line/add_circle is its own POST — a whole component can easily cost
+        100+ calls, which burns the thin annual API allocation (2,500/yr) fast.
+
+        This tool runs a single FeatureScript that creates all bodies in one POST
+        (the FeatureScript feature ``id`` parameter supports creating a PartStudio
+        body via ``newPartStudio``). It returns the created feature IDs and the
+        regen state, so a component can be built in ~1-3 calls instead of 100+.
+
+        The ``script`` must be a FeatureScript function body that uses
+        ``opCreate*`` / ``newPartStudio`` to create bodies (see onshape_help for a
+        template), OR an annotation-wrapped custom feature.
+
+        Returns: {valid, created_bodies, notices, problems}
+        """
+        # First validate (cheap, one eval) then it's the same script used to build.
+        val = self.validate_featurescript(did, wid, eid, script)
+        if not val["valid"]:
+            # Do not push a broken script; return the errors so the agent can fix.
+            return {"valid": False, "created_bodies": [], "errors": val["errors"], "notices": val["notices"]}
+
+        # Eval the (valid) script — the eval creates the bodies in-place.
+        result = self._post(
+            f"/partstudios/d/{did}/w/{wid}/e/{eid}/featurescript",
+            json_data={"script": script},
+            use_cache=False,
+        )
+        self.cache.invalidate_document(did)
+
+        # Read back regen state to confirm nothing silently broke.
+        regen = self.get_regen_errors(did, wid, eid)
+
+        return {
+            "valid": len(regen.get("problems", [])) == 0,
+            "created_bodies": (result.get("result") if isinstance(result, dict) else None),
+            "notices": result.get("notices", []) if isinstance(result, dict) else [],
+            "problems": regen.get("problems", []),
+        }
+
     # ── Sketches ───────────────────────────────────────────────────
     # We use onpy for sketch creation because raw REST is fragile.
     # onpy handles btType, feature IDs, and plane references correctly.

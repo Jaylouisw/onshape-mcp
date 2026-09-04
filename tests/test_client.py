@@ -223,6 +223,76 @@ def test_rate_limit_backoff(mock_client, mock_http):
     assert len(gets) == 2
 
 
+# ── New tools: get_regen_errors / validate_featurescript / build_component ──
+
+def test_get_regen_errors_parses_states(mock_client, mock_http):
+    "featureStates must be read from GET /features and non-OK features surfaced."
+    payload = {
+        "sourceMicroversion": "abc123",
+        "features": [
+            {"featureId": "F1", "name": "Shell", "message": {"featureId": "F1", "name": "Shell"}},
+            {"featureId": "F2", "name": "Bad Cut", "message": {"featureId": "F2", "name": "Bad Cut"}},
+        ],
+        "featureStates": {
+            "Origin": {"btType": "BTFeatureState-1688", "featureStatus": "OK", "inactive": False},
+            "F1": {"btType": "BTFeatureState-1688", "featureStatus": "OK", "inactive": False},
+            "F2": {"btType": "BTFeatureState-1688", "featureStatus": "ERROR", "inactive": False},
+        },
+    }
+    mock_http.set_route("GET", "/features", MockResponse(200, json_data=payload))
+    result = mock_client.get_regen_errors("did", "wid", "eid")
+    assert result["sourceMicroversion"] == "abc123"
+    assert result["featureStates"]["F1"]["status"] == "OK"
+    assert result["featureStates"]["F2"]["status"] == "ERROR"
+    # Only F2 is a problem; Origin and F1 are OK
+    assert len(result["problems"]) == 1
+    assert result["problems"][0]["featureId"] == "F2"
+    assert result["problems"][0]["name"] == "Bad Cut"
+
+
+def test_validate_featurescript_flags_broken_code(mock_client, mock_http):
+    """validate_featurescript must return valid=False when notices contain errors."""
+    payload = {
+        "result": None,
+        "notices": [
+            {
+                "btType": "BTNotice-227",
+                "type": "PARSE",
+                "expressionErrorInfo": {"errorMessageIdentifier": "PARAMETER_EXPRESSION_UNKNOWN_FUNCTION"},
+            },
+        ],
+    }
+    mock_http.set_route("POST", "/featurescript", MockResponse(200, json_data=payload))
+    result = mock_client.validate_featurescript("did", "wid", "eid", "function(context is Context, id) {}")
+    assert result["valid"] is False
+    assert result["error_count"] >= 1
+    assert any("PARSE" in e or "UNKNOWN_FUNCTION" in e for e in result["errors"])
+
+
+def test_validate_featurescript_ok_when_no_errors(mock_client, mock_http):
+    payload = {"result": {"value": "ok"}, "notices": []}
+    mock_http.set_route("POST", "/featurescript", MockResponse(200, json_data=payload))
+    result = mock_client.validate_featurescript("did", "wid", "eid", "function(context is Context, id) {}")
+    assert result["valid"] is True
+    assert result["error_count"] == 0
+
+
+def test_build_component_validates_before_build(mock_client, mock_http):
+    """build_component must refuse to build a broken script."""
+    payload = {
+        "result": None,
+        "notices": [
+            {"btType": "BTNotice-227", "type": "EXECUTION",
+             "expressionErrorInfo": {"errorMessageIdentifier": "SOME_ERROR"}},
+        ],
+    }
+    mock_http.set_route("POST", "/featurescript", MockResponse(200, json_data=payload))
+    result = mock_client.build_component("did", "wid", "eid", "function(context is Context, id) { bad() }")
+    assert result["valid"] is False
+    assert result["created_bodies"] == []
+    assert len(result["errors"]) >= 1
+
+
 # ── Cache behavior ──────────────────────────────────────────────────
 
 def test_cache_hit(mock_client, mock_http, sample_documents):
