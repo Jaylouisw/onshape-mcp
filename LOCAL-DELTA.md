@@ -128,7 +128,12 @@ Reapply after any of these:
 1. **Working tree reverted / commit checked out inside this repo** (the tracked `deploy/` files
    vanish with a `git checkout <commit>`, but the objects stay in the repo):
 
-       git -C /home/jay/onshape-mcp cherry-pick local/4xx-guard
+       git -C /home/jay/onshape-mcp cherry-pick fa4eb74..local/4xx-guard
+
+   The **range** matters. The branch is three commits — `5767632` (carriers), `d839a0d` (the
+   `server.py` half), `6633def` (regenerated carriers) — so cherry-picking the range restores the
+   source fix and the carriers together. Cherry-picking only the tip restores `deploy/` and this
+   file but *not* the source fix; that is only useful if you then run `deploy/apply-delta.sh`.
 
 2. **`deploy/` is present and a guard is missing** (reinstall, `git checkout -- <paths>`, a
    stash that dropped the change):
@@ -139,9 +144,24 @@ Reapply after any of these:
 
        git clone -b local/4xx-guard https://github.com/Jaylouisw/onshape-mcp.git
 
-All three were exercised on 2026-09-17 (path 2 on a fresh clone of `fa4eb74`: patch applied
-clean, `45 passed`; the resulting `client.py`/`server.py`/`conftest.py`/`test_client.py`/
-`test_server.py` were byte-identical to this checkout's, same sha256).
+All three were exercised on 2026-09-17.
+
+Path 2, on a fresh `git clone` of upstream at `fa4eb74` (own venv built with `uv`, patch copied
+into `deploy/`): `apply-delta.sh` reported `missing: client.py:4xx-guard server.py:isError`, applied
+the patch to the working tree, and ran `45 passed`; a second run said
+`already applied: both guards are present` and passed `45` again. All five patched files came out
+byte-identical to this checkout (`client.py` `95391f72…`, `server.py` `2f946bb5…`, `conftest.py`
+`196e9855…`, `test_client.py` `c416d553…`, `test_server.py` `b69a4c23…`). The same clone with the
+delta reverted runs the pristine suite: `37 passed` — the 8 tests the delta adds are the ones that
+fail without it.
+
+Path 1, in a clone reset to `fa4eb74`: `git cherry-pick local/4xx-guard` (tip only) restored
+`deploy/` and this file but left **both guards absent** (`client.py` 0, `server.py` 0) — the old
+one-command form is no longer sufficient, hence the range. `git cherry-pick fa4eb74..local/4xx-guard`
+restored everything: both guards present, `git status` clean, the same five sha256s, `45 passed`.
+
+Path 3, `git clone -b local/4xx-guard https://github.com/Jaylouisw/onshape-mcp.git`: both guards
+present, the same five sha256s, `45 passed`.
 
 ## Moving the pin
 
