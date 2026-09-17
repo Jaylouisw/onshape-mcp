@@ -133,8 +133,9 @@ Reapply after any of these:
    The **range** matters. The branch is a stack of commits on top of the pinned base — `5767632`
    (carriers), `d839a0d` (the `server.py` half), `6633def` (regenerated carriers) and the notes
    commits after it — so cherry-picking the range restores the source fix and the carriers together.
-   Cherry-picking only the tip restores `deploy/` and this file but *not* the source fix; that is
-   only useful if you then run `deploy/apply-delta.sh`.
+   Cherry-picking only the tip restores just the tracked files that commit happens to touch (the
+   carriers, when the tip is a carriers commit; this document, when it is a notes commit) and never
+   the source fix — only useful if you then run `deploy/apply-delta.sh`.
 
 2. **`deploy/` is present and a guard is missing** (reinstall, `git checkout -- <paths>`, a
    stash that dropped the change):
@@ -156,10 +157,11 @@ byte-identical to this checkout (`client.py` `95391f72…`, `server.py` `2f946bb
 delta reverted runs the pristine suite: `37 passed` — the 8 tests the delta adds are the ones that
 fail without it.
 
-Path 1, in a clone reset to `fa4eb74`: `git cherry-pick local/4xx-guard` (tip only) restored
-`deploy/` and this file but left **both guards absent** (`client.py` 0, `server.py` 0) — the old
-one-command form is no longer sufficient, hence the range. `git cherry-pick fa4eb74..local/4xx-guard`
-restored everything: both guards present, `git status` clean, the same five sha256s, `45 passed`.
+Path 1, in a clone reset to `fa4eb74`: cherry-picking only the tip never restores the source fix
+(both guards stayed absent; what it does restore depends on which commit is the tip — `deploy/` and
+this file when the tip was `6633def`, this document alone on the final tip).
+`git cherry-pick fa4eb74..local/4xx-guard` restored everything: both guards present, `git status`
+clean, the same five sha256s, `45 passed`.
 
 Path 3, `git clone -b local/4xx-guard https://github.com/Jaylouisw/onshape-mcp.git`: both guards
 present, the same five sha256s, `45 passed`.
