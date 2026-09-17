@@ -130,10 +130,11 @@ Reapply after any of these:
 
        git -C /home/jay/onshape-mcp cherry-pick fa4eb74..local/4xx-guard
 
-   The **range** matters. The branch is three commits — `5767632` (carriers), `d839a0d` (the
-   `server.py` half), `6633def` (regenerated carriers) — so cherry-picking the range restores the
-   source fix and the carriers together. Cherry-picking only the tip restores `deploy/` and this
-   file but *not* the source fix; that is only useful if you then run `deploy/apply-delta.sh`.
+   The **range** matters. The branch is a stack of commits on top of the pinned base — `5767632`
+   (carriers), `d839a0d` (the `server.py` half), `6633def` (regenerated carriers) and the notes
+   commits after it — so cherry-picking the range restores the source fix and the carriers together.
+   Cherry-picking only the tip restores `deploy/` and this file but *not* the source fix; that is
+   only useful if you then run `deploy/apply-delta.sh`.
 
 2. **`deploy/` is present and a guard is missing** (reinstall, `git checkout -- <paths>`, a
    stash that dropped the change):
