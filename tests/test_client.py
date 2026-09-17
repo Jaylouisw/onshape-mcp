@@ -8,6 +8,8 @@ from unittest.mock import MagicMock, patch
 
 from tests.conftest import MockResponse
 
+import onshape_mcp.client as client_mod
+
 
 # ── Documents ───────────────────────────────────────────────────────
 
@@ -364,8 +366,11 @@ def test_4xx_is_not_retried(mock_client, mock_http):
     assert len(gets) == 1
 
 
-def test_5xx_is_still_retried_then_succeeds(mock_client, mock_http):
-    """5xx retry behaviour must be unchanged by the 4xx guard."""
+def test_5xx_is_still_retried_then_succeeds(mock_client, mock_http, monkeypatch):
+    """5xx retry behaviour must be unchanged by the 4xx guard, and must not sleep for real —
+    the 2**attempt backoff in _request would otherwise stall the suite (and make CI timing
+    flaky)."""
+    monkeypatch.setattr(client_mod.time, "sleep", lambda *_: None)
     mock_http.set_route(
         "GET",
         "/documents",
@@ -377,3 +382,20 @@ def test_5xx_is_still_retried_then_succeeds(mock_client, mock_http):
     assert mock_client.list_documents() == []
     gets = [c for c in mock_http.calls if c[0] == "GET"]
     assert len(gets) == 2
+
+
+def test_non_429_4xx_clears_the_429_streak(mock_client, mock_http):
+    """A non-429 response proves rate limiting is not what failed, so the consecutive-429
+    streak resets even though the call raises. A 401 sitting between two 429s must not leave
+    the earlier 429s looking consecutive — that is what makes the next backoff escalate."""
+    mock_http.set_route(
+        "GET",
+        "/documents",
+        [
+            MockResponse(429, json_data={}, headers={"Retry-After": "0"}),
+            MockResponse(401, json_data={"message": "Unauthenticated API request", "status": 401}),
+        ],
+    )
+    with pytest.raises(RuntimeError):
+        mock_client.list_documents()
+    assert mock_client.rate_limiter._consecutive_429s == 0

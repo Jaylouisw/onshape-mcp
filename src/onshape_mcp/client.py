@@ -252,6 +252,11 @@ class OnshapeClient:
                     pass
                 if not detail:
                     detail = (getattr(resp, "text", "") or "").strip()[:200]
+                # A response that is not a 429 proves the rate limit is not what is failing, so
+                # clear the consecutive-429 streak before raising — the same state a success
+                # would leave. Without this, a 401 sitting between two 429s leaves the earlier
+                # ones looking consecutive and the next 429 backs off far longer than it should.
+                self.rate_limiter.report_success()
                 raise RuntimeError(
                     f"Onshape API {resp.status_code} on {method} {url}: {detail or 'request failed'}"
                 )
